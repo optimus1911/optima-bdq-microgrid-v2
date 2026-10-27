@@ -1,0 +1,47 @@
+# Team OPTIMA - default configuration (units: MW, MWh, $/MWh, hourly steps)
+seed: 42
+
+data:
+  csv_path: null          # set to data/campus.csv (columns: timestamp,load,solar,wind,price); null = synthetic
+  synthetic_days: 365
+  max_gap_hours: 3        # interpolate gaps up to this length, reject days with longer gaps
+  split: {train: 0.7, val: 0.1, test: 0.2}   # chronological split by day
+
+system:
+  n_bess: 5
+  n_levels: 5             # n discrete charge/discharge levels per battery (use 2 or 5)
+  history: 6              # H hours of solar / wind / load history fed to the LSTMs
+  dt: 1.0
+  bess:
+    capacity_mwh: 1.0
+    power_mw: 0.5
+    eff_charge: 0.95
+    eff_discharge: 0.95
+    soc_min: 0.10
+    soc_max: 0.90
+    soc_init: 0.50
+    degradation_cost: 4.0   # $/MWh throughput
+  dg: {p_max: 3.0, fuel_cost: 70.0}
+  grid: {import_max: 6.0, export_max: 3.0, sell_ratio: 0.8}
+  curtailment_cost: 50.0
+  shed_cost: 1000.0
+  reward_scale: 100.0       # reward = -cost / reward_scale
+
+train:
+  episodes: 3000            # paper uses ~20000; 3000 is enough for a CPU hackathon demo
+  gamma: 0.99
+  lr: 0.0005
+  batch_size: 64
+  buffer_size: 50000
+  warmup_steps: 500
+  train_every: 1            # f_n in Algorithm 1
+  target_update: 500        # steps between hard target-network copies
+  eps_start: 1.0
+  eps_end: 0.05
+  eps_decay_frac: 0.5       # fraction of episodes over which epsilon decays
+  per_alpha: 0.6
+  per_beta_start: 0.4
+  lstm_hidden: 16
+  fc_hidden: 128
+  eval_every: 100           # episodes (paper: 500)
+  out_dir: models
