@@ -29,10 +29,12 @@ def _cost(g, imp, exp, curt, shed, price, s, dt):
                  + s["curtailment_cost"] * curt + s["shed_cost"] * shed)
 
 
+
 def _heuristic(load, ren, price, s, b_net, dt):
     """Rule-based fallback: DG first, then grid, curtail surplus. Always returns a balanced plan."""
     net = load - ren - b_net
     g = imp = exp = curt = shed = 0.0
+
     if net >= 0:
         g = min(net, s["dg"]["p_max"])
         imp = min(net - g, s["grid"]["import_max"])
@@ -40,8 +42,13 @@ def _heuristic(load, ren, price, s, b_net, dt):
     else:
         surplus = -net
         exp = min(surplus, s["grid"]["export_max"])
-        curt = surplus - exp
-    return Dispatch(g, imp, exp, curt, shed, b_net, _cost(g, imp, exp, curt, shed, price, s, dt), True)
+        curt = max(surplus - exp, 0.0)
+
+    return Dispatch(
+        g, imp, exp, curt, shed, b_net,
+        _cost(g, imp, exp, curt, shed, price, s, dt),
+        True
+    )
 
 
 def solve_dispatch(load, ren, price, s, batt_net=None, batt_bounds=None, deg_cost=0.0, dt=1.0):
