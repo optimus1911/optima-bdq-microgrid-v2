@@ -46,9 +46,37 @@ def synthetic_series(days=365, seed=0):
 
 
 def load_csv(path, max_gap=3):
-    """Load hourly CSV (timestamp,load,solar,wind,price); interpolate short gaps, drop bad days."""
+    """Interpolate short hourly gaps, drop days with unresolved gaps, and reject infinities."""
     df = pd.read_csv(path, parse_dates=["timestamp"]).set_index("timestamp").sort_index()
-    df = df[~df.index.duplicated()][list(SERIES)]
+    missing_columns = [column for column in SERIES if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"CSV is missing required numeric column(s): {', '.join(missing_columns)}")
+
+    df = df[list(SERIES)]
+    for column in SERIES:
+        try:
+            df[column] = pd.to_numeric(df[column], errors="raise")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"CSV column '{column}' must contain numeric values.") from exc
+
+        values = df[column].to_numpy(dtype=float)
+        if np.isinf(values).any():
+            raise ValueError(f"CSV column '{column}' contains infinity; values must be finite.")
+
+    df = df[~df.index.duplicated()]
+    missing_counts = df.isna().sum()
+    missing_counts = missing_counts[missing_counts > 0]
+    if not missing_counts.empty:
+        missing_summary = ", ".join(
+            f"{column} ({int(count)})" for column, count in missing_counts.items()
+        )
+        log.warning(
+            "CSV missing values in %s; interpolating gaps up to %d hour(s) and dropping "
+            "days with unresolved gaps.",
+            missing_summary,
+            max_gap,
+        )
+
     full = pd.date_range(df.index.min().floor("D"), df.index.max().ceil("D") - pd.Timedelta(hours=1), freq="h")
     df = df.reindex(full).interpolate(limit=max_gap, limit_area="inside")
     for c in ("load", "solar", "wind"):
@@ -59,6 +87,17 @@ def load_csv(path, max_gap=3):
     if dropped:
         log.warning("Rejected %d day(s) with gaps longer than %d h", dropped, max_gap)
     df = df[day_ok]
+    if df.empty:
+        unresolved_columns = ", ".join(
+            column for column in SERIES if missing_counts.get(column, 0) > 0
+        )
+        raise ValueError(
+            "CSV contains no complete hourly days after missing-value interpolation; "
+            f"unresolved missing values in column(s): {unresolved_columns or ', '.join(SERIES)}."
+        )
+    for column in SERIES:
+        if not np.isfinite(df[column].to_numpy(dtype=float)).all():
+            raise ValueError(f"CSV column '{column}' contains non-finite values after interpolation.")
     return {c: df[c].to_numpy(dtype=float) for c in SERIES}
 
 

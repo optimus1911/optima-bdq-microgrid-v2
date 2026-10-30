@@ -1,0 +1,5 @@
+# Installs runtime dependencies as well as local test and security tooling.
+-r requirements.txt
+
+pytest>=7.4
+pip-audit>=2.10.1

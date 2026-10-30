@@ -53,20 +53,20 @@ class BDQAgent:
 
     @classmethod
     def load(cls, path, env, tcfg, device=None):
-        safe_types = []
-        try:
-            import numpy as _np
-            safe_types = [_np._core.multiarray.scalar, _np.dtype, _np.dtypes.Float64DType]
-        except Exception:
-            pass
+        numpy_core = getattr(np, "_core", None)
+        if numpy_core is None:
+            numpy_core = np.core
+        safe_types = [numpy_core.multiarray.scalar, np.dtype]
+        numpy_dtypes = getattr(np, "dtypes", None)
+        float64_dtype = getattr(numpy_dtypes, "Float64DType", None)
+        if float64_dtype is not None:
+            safe_types.append(float64_dtype)
+
         if hasattr(torch.serialization, "safe_globals") and safe_types:
-            try:
-                with torch.serialization.safe_globals(safe_types):
-                    ck = torch.load(path, map_location="cpu", weights_only=True)
-            except Exception:
-                ck = torch.load(path, map_location="cpu", weights_only=False)
+            with torch.serialization.safe_globals(safe_types):
+                ck = torch.load(path, map_location="cpu", weights_only=True)
         else:
-            ck = torch.load(path, map_location="cpu")
+            ck = torch.load(path, map_location="cpu", weights_only=True)
         ag = cls(env, tcfg, device)
         ag.net.load_state_dict(ck["state"])
         ag.sync_target()

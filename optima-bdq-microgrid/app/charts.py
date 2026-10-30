@@ -507,11 +507,11 @@ def create_power_flow_sankey(pf):
         ("Solar & Wind", pf.solar_wind_kw, "#F59E0B", "rgba(245,158,11,0.42)"),
         ("Diesel Gen", pf.diesel_gen_kw, "#C28A4A", "rgba(194,138,74,0.42)"),
         ("Grid Import", pf.grid_import_kw, "#818CF8", "rgba(129,140,248,0.42)"),
-        ("BESS Discharge", pf.battery_discharge_kw, "#14B8A6", "rgba(20,184,166,0.42)"),
+        ("BESS Discharge", pf.battery_discharge_kw, "#A855F7", "rgba(168,85,247,0.42)"),
     ]
     sink_specs = [
-        ("Campus Demand", pf.campus_demand_kw, "#38BDF8", "rgba(56,189,248,0.42)"),
-        ("BESS Charge", pf.battery_charge_kw, "#A855F7", "rgba(168,85,247,0.42)"),
+        ("Campus Demand", pf.campus_demand_kw, "#0F9D9A", "rgba(15,157,154,0.42)"),
+        ("BESS Charge", pf.battery_charge_kw, "#C084FC", "rgba(192,132,252,0.42)"),
         ("Grid Export", pf.grid_export_kw, "#7C9DC8", "rgba(124,157,200,0.42)"),
         ("Curtailment", pf.curtailment_kw, "#EF4444", "rgba(239,68,68,0.42)"),
     ]
@@ -528,16 +528,18 @@ def create_power_flow_sankey(pf):
     active_sources = [spec for spec in source_specs if spec[1] > 0.5]
     active_sinks = [spec for spec in sink_specs if spec[1] > 0.5]
 
-    def row_positions(count):
+    def row_positions(count, start, end):
         if count == 1:
-            return [0.5]
-        return [0.06 + 0.88 * i / (count - 1) for i in range(count)]
+            return [(start + end) / 2]
+        return [start + (end - start) * i / (count - 1) for i in range(count)]
 
-    for (name, value, color, link_color), y in zip(active_sources, row_positions(len(active_sources))):
+    for (name, value, color, link_color), y in zip(
+        active_sources, row_positions(len(active_sources), 0.05, 0.43)
+    ):
         node_index = len(labels)
-        labels.append(f"{name} ({value:,.0f} kW)")
+        labels.append(name)
         colors.append(color)
-        node_x.append(0.03)
+        node_x.append(0.1)
         node_y.append(y)
         sources.append(node_index)
         targets.append(-1)
@@ -552,11 +554,13 @@ def create_power_flow_sankey(pf):
     for i in range(len(active_sources)):
         targets[i] = bus_index
 
-    for (name, value, color, link_color), y in zip(active_sinks, row_positions(len(active_sinks))):
+    for (name, value, color, link_color), y in zip(
+        active_sinks, row_positions(len(active_sinks), 0.57, 0.95)
+    ):
         node_index = len(labels)
-        labels.append(f"{name} ({value:,.0f} kW)")
+        labels.append(name)
         colors.append(color)
-        node_x.append(0.97)
+        node_x.append(0.9)
         node_y.append(y)
         sources.append(bus_index)
         targets.append(node_index)
@@ -566,7 +570,7 @@ def create_power_flow_sankey(pf):
     if not values:
         labels = ["Solar & Wind (0 kW)", "Microgrid Bus", "Campus Demand (0 kW)"]
         colors = ["#F59E0B", "#38BDF8", "#38BDF8"]
-        node_x = [0.03, 0.5, 0.97]
+        node_x = [0.1, 0.5, 0.9]
         node_y = [0.5, 0.5, 0.5]
         sources = [0, 1]
         targets = [1, 2]
@@ -574,7 +578,7 @@ def create_power_flow_sankey(pf):
         link_colors = ["rgba(148,163,184,0.2)", "rgba(148,163,184,0.2)"]
 
     fig = go.Figure(data=[go.Sankey(
-        arrangement="fixed",
+        arrangement="snap",
         node=dict(
             pad=8, thickness=10, line=dict(color="#1E2E46", width=0.75),
             label=labels, color=colors, x=node_x, y=node_y,
@@ -590,8 +594,8 @@ def create_power_flow_sankey(pf):
         paper_bgcolor=C["bg_panel"],
         plot_bgcolor=C["bg_plot"],
         height=180,
-        margin=dict(l=10, r=10, t=4, b=4),
-        font=dict(family="Inter, sans-serif", color=C["text"], size=9),
+        margin=dict(l=8, r=8, t=6, b=6),
+        font=dict(family="Inter, sans-serif", color=C["text"], size=9.5),
     )
     return fig
 
@@ -608,7 +612,7 @@ def create_demand_coverage_bar(dc):
 
     sources = [
         ("Renewables", dc.ren_contrib_kw, dc.ren_contrib_pct, "#F59E0B"),
-        ("BESS", dc.batt_contrib_kw, dc.batt_contrib_pct, "#14B8A6"),
+        ("BESS", dc.batt_contrib_kw, dc.batt_contrib_pct, "#A855F7"),
         ("Diesel", dc.dg_contrib_kw, dc.dg_contrib_pct, "#C28A4A"),
         ("Grid", dc.grid_contrib_kw, dc.grid_contrib_pct, "#818CF8"),
     ]
@@ -647,12 +651,12 @@ def create_demand_coverage_bar(dc):
         template="plotly_dark",
         paper_bgcolor=C["bg_panel"],
         plot_bgcolor=C["bg_plot"],
-        height=128,
-        margin=dict(l=10, r=10, t=8, b=40),
+        height=152,
+        margin=dict(l=10, r=10, t=8, b=62),
         showlegend=True,
         legend=dict(
             orientation="h",
-            yanchor="top", y=-0.31,
+            yanchor="top", y=-0.4,
             xanchor="center", x=0.5,
             bgcolor="rgba(20,30,46,0.9)",
             bordercolor=C["border"], borderwidth=1,

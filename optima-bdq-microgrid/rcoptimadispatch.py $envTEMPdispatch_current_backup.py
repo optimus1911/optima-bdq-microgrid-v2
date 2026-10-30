@@ -1,0 +1,56 @@
+[1mdiff --git "a/C:\\Users\\raghu\\AppData\\Local\\Temp\\dispatch_original.py" "b/src\\optima\\dispatch.py"[m
+[1mindex a32939a..8323419 100644[m
+[1m--- "a/C:\\Users\\raghu\\AppData\\Local\\Temp\\dispatch_original.py"[m
+[1m+++ "b/src\\optima\\dispatch.py"[m
+[36m@@ -1,4 +1,4 @@[m
+[31m-﻿"""Single-step economic dispatch (replaces the paper's full MISOCP power flow in V1).[m
+[32m+[m[32m"""Single-step economic dispatch (replaces the paper's full MISOCP power flow in V1).[m
+ [m
+ Given load, renewables, price and the battery net power, an LP chooses DG output, grid[m
+ import/export, curtailment and (as a last resort) load shedding so power balance holds.[m
+[36m@@ -29,10 +29,12 @@[m [mdef _cost(g, imp, exp, curt, shed, price, s, dt):[m
+                  + s["curtailment_cost"] * curt + s["shed_cost"] * shed)[m
+ [m
+ [m
+[32m+[m
+ def _heuristic(load, ren, price, s, b_net, dt):[m
+     """Rule-based fallback: DG first, then grid, curtail surplus. Always returns a balanced plan."""[m
+     net = load - ren - b_net[m
+     g = imp = exp = curt = shed = 0.0[m
+[32m+[m
+     if net >= 0:[m
+         g = min(net, s["dg"]["p_max"])[m
+         imp = min(net - g, s["grid"]["import_max"])[m
+[36m@@ -40,26 +42,10 @@[m [mdef _heuristic(load, ren, price, s, b_net, dt):[m
+     else:[m
+         surplus = -net[m
+         exp = min(surplus, s["grid"]["export_max"])[m
+[31m-        curt = surplus - exp[m
+[31m-    return Dispatch(g, imp, exp, curt, shed, b_net, _cost(g, imp, exp, curt, shed, price, s, dt), True)[m
+[32m+[m[32m        curt = max(surplus - exp, 0.0)[m
+ [m
+[31m-[m
+[31m-def solve_dispatch(load, ren, price, s, batt_net=None, batt_bounds=None, deg_cost=0.0, dt=1.0):[m
+[31m-    """Fixed battery power (`batt_net`) or free battery within `batt_bounds=(lo, hi)` (myopic mode)."""[m
+[31m-    dg, gr = s["dg"], s["grid"][m
+[31m-    sell = gr["sell_ratio"] * price[m
+[31m-    # x = [g, imp, exp, curt, shed, b_dis, b_chg][m
+[31m-    c = np.array([dg["fuel_cost"], price, -sell, s["curtailment_cost"], s["shed_cost"], deg_cost, deg_cost])[m
+[31m-    if batt_net is not None:[m
+[31m-        bb = [(max(batt_net, 0.0),) * 2, (max(-batt_net, 0.0),) * 2][m
+[31m-    else:[m
+[31m-        lo, hi = batt_bounds[m
+[31m-        bb = [(0.0, max(hi, 0.0)), (0.0, max(-lo, 0.0))][m
+[31m-    bounds = [(0, dg["p_max"]), (0, gr["import_max"]), (0, gr["export_max"]),[m
+[31m-              (0, max(ren, 0.0)), (0, max(load, 0.0))] + bb[m
+[31m-    res = linprog(c, A_eq=[[1, 1, -1, -1, 1, 1, -1]], b_eq=[load - ren], bounds=bounds, method="highs")[m
+[31m-    if not res.success:[m
+[31m-        log.warning("Dispatch LP failed (%s); falling back to myopic heuristic", res.message)[m
+[31m-        return _heuristic(load, ren, price, s, batt_net if batt_net is not None else 0.0, dt)[m
+[31m-    g, imp, exp, curt, shed, bd, bc = res.x[m
+[31m-    return Dispatch(g, imp, exp, curt, shed, bd - bc, _cost(g, imp, exp, curt, shed, price, s, dt))[m
+[32m+[m[32m    return Dispatch([m
+[32m+[m[32m        g, imp, exp, curt, shed, b_net,[m
+[32m+[m[32m        _cost(g, imp, exp, curt, shed, price, s, dt),[m
+[32m+[m[32m        True[m
+[32m+[m[32m    )[m

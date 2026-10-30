@@ -22,9 +22,13 @@ import streamlit as st
 from optima.config import load_config
 from optima.data import build_data
 from optima.env import MicrogridEnv
-from optima.agent import BDQAgent
 from optima.baselines import myopic_policy, price_threshold_policy
 from optima.evaluate import run_episode
+from optima.rollout_support import (
+    file_fingerprint,
+    load_optional_bdq_policy,
+    rollout_fingerprints,
+)
 from optima.operator_logic import (
     compute_operational_health,
     compute_power_flow,
@@ -85,14 +89,25 @@ def _log_event(msg: str) -> None:
 
 
 # ── Cached resources ─────────────────────────────────────────────────────────
+CONFIG_PATH = BASE_DIR / "configs" / "default.yaml"
+resource_cfg = load_config(str(CONFIG_PATH))
+DATA_SOURCE_PATH = (
+    pathlib.Path(resource_cfg["data"]["csv_path"]).resolve()
+    if resource_cfg["data"].get("csv_path")
+    else None
+)
+CONFIG_FILE_FINGERPRINT = file_fingerprint(CONFIG_PATH)
+DATA_FILE_FINGERPRINT = file_fingerprint(DATA_SOURCE_PATH)
+
+
 @st.cache_resource(show_spinner=False)
-def _load_resources():
-    cfg  = load_config(str(BASE_DIR / "configs" / "default.yaml"))
+def _load_resources(config_file_fingerprint, data_file_fingerprint):
+    cfg = load_config(str(CONFIG_PATH))
     data = build_data(cfg)
     _log_event("System resources loaded")
     return cfg, data
 
-cfg, data = _load_resources()
+cfg, data = _load_resources(CONFIG_FILE_FINGERPRINT, DATA_FILE_FINGERPRINT)
 sys_cfg   = cfg["system"]
 bess_cfg  = sys_cfg["bess"]
 test_days = [int(d) for d in data.split["test"]]
@@ -191,28 +206,49 @@ f'<div><b>Grid Max:</b> +{sys_cfg["grid"]["import_max"]*1000:.0f} kW / −{sys_c
         unsafe_allow_html=True,
     )
 
+config_fingerprint, data_fingerprint, model_fingerprint = rollout_fingerprints(
+    cfg,
+    data,
+    CONFIG_PATH,
+    DATA_SOURCE_PATH,
+    model_path,
+)
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  SIMULATION ROLLOUTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @st.cache_data(show_spinner=False)
-def _run_rollouts(day_: int, model_exists_: bool):
-    """Cache rollouts per (day, model_exists) so reruns don't re-simulate."""
+def _run_rollouts(
+    day: int,
+    config_fingerprint: str,
+    data_fingerprint: str,
+    model_fingerprint: str,
+    model_exists: bool,
+):
+    """Cache rollouts only while their effective inputs and checkpoint are unchanged."""
     env_ = MicrogridEnv(cfg, data, "test")
     pols = {
         "Myopic":          myopic_policy,
         "Price-threshold": price_threshold_policy(data),
     }
-    if model_exists_:
-        try:
-            agent_ = BDQAgent.load(str(model_path), env_, cfg["train"])
-            pols["BDQ agent"] = agent_.policy(env_)
-        except Exception:
-            pass
-    return {name: run_episode(env_, p, day_) for name, p in pols.items()}
+    diagnostic = None
+    if model_exists:
+        policy, diagnostic = load_optional_bdq_policy(model_path, env_, cfg["train"])
+        if policy is not None:
+            pols["BDQ agent"] = policy
+    return {name: run_episode(env_, p, day) for name, p in pols.items()}, diagnostic
 
 
-runs          = _run_rollouts(day, model_exists)
+runs, bdq_load_diagnostic = _run_rollouts(
+    day,
+    config_fingerprint,
+    data_fingerprint,
+    model_fingerprint,
+    model_exists,
+)
+if bdq_load_diagnostic:
+    st.warning(bdq_load_diagnostic)
 selected_run  = runs.get(who, runs.get("Myopic"))
 steps         = selected_run["steps"]
 myopic_cost   = runs["Myopic"]["cost"]
@@ -381,12 +417,12 @@ f'Currently Inspecting: Hour {active_inspected_hour:02d}:00'
     next_action_info = compute_next_action(inspect_hour, steps, sys_cfg)
 
     # ── 3 & 4. ENERGY FLOW, POWER BALANCE & DEMAND COVERAGE ROW ─────────────
-    flow_col, cov_col = st.columns([1.1, 1.0])
+    flow_col, cov_col = st.columns([1.1, 1.0], gap="medium", vertical_alignment="top")
 
     with flow_col:
-        with st.container(border=True):
+        with st.container(border=True, key="energy-flow-panel", height="stretch"):
             st.markdown(
-                '<div class="panel-title">Energy Flow &amp; Power Balance</div>',
+                '<div class="panel-title operator-panel-title">Energy Flow &amp; Power Balance</div>',
                 unsafe_allow_html=True
             )
             sankey_fig = create_power_flow_sankey(pf)
@@ -398,7 +434,7 @@ f'Currently Inspecting: Hour {active_inspected_hour:02d}:00'
 
             st.markdown(
 '<div class="balance-footer">'
-f'<div><b>Supply:</b> {pf.total_supply_kw:,.1f} kW &nbsp;= &nbsp;<b>Disposition:</b> {pf.total_disposition_kw:,.1f} kW</div>'
+f'<div class="balance-values"><b>Supply:</b> {pf.total_supply_kw:,.1f} kW <span aria-hidden="true">=</span> <b>Disposition:</b> {pf.total_disposition_kw:,.1f} kW</div>'
 f'<div class="{balance_status_cls}">{balance_icon} {balance_text}</div>'
 '</div>'
 '<div class="balance-caption">'
@@ -408,25 +444,26 @@ f'<div class="{balance_status_cls}">{balance_icon} {balance_text}</div>'
             )
 
     with cov_col:
-        with st.container(border=True):
+        with st.container(border=True, key="demand-coverage-panel", height="stretch"):
             st.markdown(
-                '<div class="panel-title">Demand Coverage &amp; Supply Headroom</div>',
+                '<div class="panel-title operator-panel-title">Demand Coverage &amp; Supply Headroom</div>',
                 unsafe_allow_html=True
             )
             cov_fig = create_demand_coverage_bar(dc)
-            st.plotly_chart(cov_fig, use_container_width=True, config={"displayModeBar": False})
+            with st.container(key="coverage-chart-container", gap=None):
+                st.plotly_chart(cov_fig, use_container_width=True, config={"displayModeBar": False})
 
             # Supply adequacy metrics & operating headroom (no redundant gap concepts)
             adequacy_color = "var(--accent-green)" if dc.is_fully_covered else "var(--accent-red)"
             st.markdown(
 f'<div class="coverage-summary">'
-f'<div><b>Campus Demand:</b> {dc.campus_demand_kw:,.1f} kW</div>'
-f'<div><b>Adequacy:</b> <span style="color:{adequacy_color};font-weight:700;">{dc.coverage_pct:.1f}%</span></div>'
-f'<div><b>Unmet Shortfall:</b> {dc.unmet_demand_kw:,.1f} kW</div>'
+f'<div class="coverage-metric"><span class="coverage-metric-label">Campus Demand</span><strong>{dc.campus_demand_kw:,.1f} kW</strong></div>'
+f'<div class="coverage-metric"><span class="coverage-metric-label">Adequacy</span><strong style="color:{adequacy_color};">{dc.coverage_pct:.1f}%</strong></div>'
+f'<div class="coverage-metric"><span class="coverage-metric-label">Unmet Shortfall</span><strong>{dc.unmet_demand_kw:,.1f} kW</strong></div>'
 f'</div>'
 f'<div class="coverage-details">'
-f'<div><b>Supply Allocation:</b> Renewables {dc.ren_contrib_pct:.1f}% · BESS {dc.batt_contrib_pct:.1f}% · DG {dc.dg_contrib_pct:.1f}% · Grid {dc.grid_contrib_pct:.1f}%</div>'
-f'<div><b>Operating Headroom:</b> DG +{dc.dg_margin_kw:,.0f} kW · Grid +{dc.grid_import_margin_kw:,.0f} kW · BESS +{dc.batt_discharge_margin_kw:,.0f} kW</div>'
+f'<div class="coverage-detail"><b>Supply Allocation</b><span>Renewables {dc.ren_contrib_pct:.1f}% · BESS {dc.batt_contrib_pct:.1f}% · DG {dc.dg_contrib_pct:.1f}% · Grid {dc.grid_contrib_pct:.1f}%</span></div>'
+f'<div class="coverage-detail"><b>Operating Headroom</b><span>DG +{dc.dg_margin_kw:,.0f} kW · Grid +{dc.grid_import_margin_kw:,.0f} kW · BESS discharge +{dc.batt_discharge_margin_kw:,.0f} / charge +{dc.batt_charge_margin_kw:,.0f} kW</span></div>'
 f'</div>',
                 unsafe_allow_html=True
             )

@@ -67,6 +67,7 @@ class DemandCoverage:
     dg_margin_kw: float
     grid_import_margin_kw: float
     batt_discharge_margin_kw: float
+    batt_charge_margin_kw: float
 
 
 @dataclass
@@ -266,7 +267,11 @@ def compute_power_flow(step: Dict[str, Any], sys_cfg: Dict[str, Any], hour_idx: 
 # 3. DEMAND COVERAGE AND SUPPLY ADEQUACY
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def compute_demand_coverage(step: Dict[str, Any], sys_cfg: Dict[str, Any], hour_idx: int = 23) -> DemandCoverage:
-    """Assess whether campus demand is covered and compute exact source allocation and headroom."""
+    """Assess demand coverage and next-interval resource headroom.
+
+    Battery reserves use the post-dispatch SoC in ``step`` and assume the
+    configured ``dt`` is the duration of the next interval.
+    """
     p_arr = np.asarray(step["p"], dtype=float)
     demand_kw = max(float(step.get("load", 0.0)), 0.0) * 1000.0
     shed_kw = max(float(step.get("shed", 0.0)), 0.0) * 1000.0
@@ -299,11 +304,29 @@ def compute_demand_coverage(step: Dict[str, Any], sys_cfg: Dict[str, Any], hour_
     # Compute operating headroom
     dg_max_kw = sys_cfg["dg"]["p_max"] * 1000.0
     grid_imp_max_kw = sys_cfg["grid"]["import_max"] * 1000.0
-    bess_power_max_kw = sys_cfg["n_bess"] * sys_cfg["bess"]["power_mw"] * 1000.0
+    b_cfg = sys_cfg["bess"]
+    soc = np.clip(
+        np.asarray(step["soc"], dtype=float),
+        b_cfg["soc_min"],
+        b_cfg["soc_max"],
+    )
+    dt = float(sys_cfg["dt"])
+    batt_discharge_margin_kw = np.minimum(
+        b_cfg["power_mw"],
+        np.maximum(soc - b_cfg["soc_min"], 0.0)
+        * b_cfg["capacity_mwh"]
+        * b_cfg["eff_discharge"]
+        / dt,
+    ).sum() * 1000.0
+    batt_charge_margin_kw = np.minimum(
+        b_cfg["power_mw"],
+        np.maximum(b_cfg["soc_max"] - soc, 0.0)
+        * b_cfg["capacity_mwh"]
+        / (b_cfg["eff_charge"] * dt),
+    ).sum() * 1000.0
 
     dg_margin = max(dg_max_kw - dg_kw, 0.0)
     grid_margin = max(grid_imp_max_kw - imp_kw, 0.0)
-    batt_margin = max(bess_power_max_kw - batt_dis_kw, 0.0)
 
     return DemandCoverage(
         timestamp_hour=hour_idx,
@@ -322,7 +345,8 @@ def compute_demand_coverage(step: Dict[str, Any], sys_cfg: Dict[str, Any], hour_
         grid_contrib_pct=_pct(grid_contrib),
         dg_margin_kw=dg_margin,
         grid_import_margin_kw=grid_margin,
-        batt_discharge_margin_kw=batt_margin,
+        batt_discharge_margin_kw=float(batt_discharge_margin_kw),
+        batt_charge_margin_kw=float(batt_charge_margin_kw),
     )
 
 

@@ -1,0 +1,11 @@
+# Root-level local Python environments
+.venv/
+env/
+venv/
+
+# Root-level credentials and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key

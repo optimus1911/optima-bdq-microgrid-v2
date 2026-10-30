@@ -156,7 +156,7 @@ def test_operator_charts_remain_compact_and_balanced(setup_env_and_runs, hour):
     assert outbound_kw == pytest.approx(pf.total_disposition_kw, abs=2.1)
 
     coverage_fig = create_demand_coverage_bar(coverage)
-    assert coverage_fig.layout.height == 128
+    assert coverage_fig.layout.height == 152
     assert coverage_fig.layout.barmode == "stack"
     assert coverage_fig.layout.xaxis.title.text is None
 

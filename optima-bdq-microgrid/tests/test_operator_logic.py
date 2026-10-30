@@ -95,6 +95,61 @@ def test_demand_coverage_adequacy(rollout_data):
         assert abs(tot_contrib - dc.covered_demand_kw) < 0.1
 
 
+def _coverage_for_soc(soc):
+    sys_cfg = {
+        "n_bess": len(soc),
+        "dt": 0.5,
+        "bess": {
+            "capacity_mwh": 1.0,
+            "power_mw": 0.5,
+            "eff_discharge": 0.9,
+            "eff_charge": 0.8,
+            "soc_min": 0.2,
+            "soc_max": 0.9,
+        },
+        "dg": {"p_max": 3.0},
+        "grid": {"import_max": 6.0},
+    }
+    step = {
+        "p": np.zeros(len(soc)),
+        "soc": np.asarray(soc, dtype=float),
+        "load": 1.0,
+        "ren": 0.0,
+        "g": 0.0,
+        "imp": 1.0,
+        "shed": 0.0,
+    }
+    return compute_demand_coverage(step, sys_cfg)
+
+
+@pytest.mark.parametrize(
+    "soc, discharge_kw, charge_kw",
+    [
+        ([0.2, 0.2], 0.0, 1000.0),
+        ([0.9, 0.9], 1000.0, 0.0),
+    ],
+)
+def test_battery_headroom_soc_boundaries(soc, discharge_kw, charge_kw):
+    coverage = _coverage_for_soc(soc)
+
+    assert coverage.batt_discharge_margin_kw == pytest.approx(discharge_kw)
+    assert coverage.batt_charge_margin_kw == pytest.approx(charge_kw)
+
+
+def test_battery_discharge_headroom_respects_energy_and_power_limits():
+    energy_limited = _coverage_for_soc([0.3, 0.4])
+    power_limited = _coverage_for_soc([0.6, 0.9])
+
+    assert energy_limited.batt_discharge_margin_kw == pytest.approx(540.0)
+    assert power_limited.batt_discharge_margin_kw == pytest.approx(1000.0)
+
+
+def test_battery_charge_headroom_respects_energy_and_power_limits():
+    coverage = _coverage_for_soc([0.85, 0.3])
+
+    assert coverage.batt_charge_margin_kw == pytest.approx(625.0)
+
+
 def test_battery_fleet_status_bounds(rollout_data):
     cfg, env, runs, steps = rollout_data
     step = steps[10]

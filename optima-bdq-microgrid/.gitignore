@@ -1,8 +1,32 @@
 __pycache__/
 *.pyc
+*.pyo
 .venv/
+venv/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.streamlit/secrets.toml
+deploy/secrets/
+
+# Editor, temporary, and backup files
+*.tmp
+*.bak
+*.orig
+*.swp
+*~
+
 models/*.pt
+models/*.pth
+models/*.ckpt
 results/*
 !results/.gitkeep
 data/*.csv

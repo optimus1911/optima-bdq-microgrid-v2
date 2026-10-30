@@ -6,4 +6,3 @@ torch>=2.0
 matplotlib>=3.7
 streamlit>=1.30
 plotly>=5.18
-pytest>=7.4
