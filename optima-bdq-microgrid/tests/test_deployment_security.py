@@ -96,3 +96,73 @@ def test_build_context_excludes_local_data_checkpoints_and_secrets():
     assert "!.env.example" in gitignore
     assert "!.streamlit/config.toml" in dockerignore
     assert "COPY .streamlit/config.toml /opt/optima/.streamlit/config.toml" in dockerfile
+
+
+def test_render_origin_uses_render_port_and_keeps_streamlit_loopback_only():
+    nginx = _read("deploy/nginx-render.conf.template")
+    entrypoint = _read("deploy/render-entrypoint.sh")
+    dockerfile = _read("deploy/Dockerfile.render")
+
+    assert "listen 0.0.0.0:${PORT} default_server;" in nginx
+    assert "PORT=${PORT:-10000}" in entrypoint
+    assert "envsubst '${PORT} ${BASIC_AUTH_FILE}'" in entrypoint
+    assert "--server.address=127.0.0.1" in entrypoint
+    assert "--server.port=8501" in entrypoint
+    assert "EXPOSE 10000" in dockerfile
+    assert "EXPOSE 8501" not in dockerfile
+    assert "USER optima" in dockerfile
+    assert "groupadd --gid 1000 render-secrets" in dockerfile
+    for nginx_variable in (
+        "$host",
+        "$remote_addr",
+        "$http_upgrade",
+        "$connection_upgrade",
+    ):
+        assert nginx_variable in nginx
+
+
+def test_render_auth_secret_uses_render_secret_file_and_fails_closed():
+    entrypoint = _read("deploy/render-entrypoint.sh")
+    nginx = _read("deploy/nginx-render.conf.template")
+    env_example = _read("deploy/render.env.example")
+
+    assert 'BASIC_AUTH_FILE=${BASIC_AUTH_FILE:-/etc/secrets/optima-htpasswd}' in entrypoint
+    assert '[ ! -s "$BASIC_AUTH_FILE" ]' in entrypoint
+    assert '[ ! -r "$BASIC_AUTH_FILE" ]' in entrypoint
+    assert "Gateway startup refused" not in entrypoint
+    assert "auth_basic " in nginx
+    assert "auth_basic_user_file ${BASIC_AUTH_FILE};" in nginx
+    assert "auth_basic off" not in nginx
+    assert "BASIC_AUTH_FILE=/etc/secrets/optima-htpasswd" in env_example
+    assert "tls.crt" not in entrypoint
+    assert "tls.key" not in entrypoint
+
+
+def test_render_default_server_protects_every_route_and_proxies_websockets():
+    nginx = _read("deploy/nginx-render.conf.template")
+
+    assert nginx.count("server {") == 1
+    assert "default_server" in nginx
+    assert "server_name _;" in nginx
+    assert nginx.count("location / {") == 1
+    assert "auth_basic " in nginx
+    assert "auth_basic_user_file ${BASIC_AUTH_FILE};" in nginx
+    assert "proxy_set_header Upgrade $http_upgrade;" in nginx
+    assert "proxy_set_header Connection $connection_upgrade;" in nginx
+    assert "proxy_set_header X-Forwarded-Proto https;" in nginx
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in nginx
+    assert "proxy_set_header Authorization \"\";" in nginx
+
+
+def test_render_dockerfile_and_build_context_include_only_render_config():
+    dockerfile = _read("deploy/Dockerfile.render")
+    dockerignore = _read(".dockerignore")
+
+    assert "COPY deploy/nginx-render.conf.template" in dockerfile
+    assert "COPY deploy/render-entrypoint.sh" in dockerfile
+    assert "!deploy/Dockerfile.render" in dockerignore
+    assert "!deploy/nginx-render.conf.template" in dockerignore
+    assert "!deploy/render-entrypoint.sh" in dockerignore
+    assert "deploy/secrets/" in dockerignore
+    assert "data/" in dockerignore
+    assert "models/" in dockerignore

@@ -13,8 +13,11 @@
 !app/**
 !deploy
 !deploy/Dockerfile
+!deploy/Dockerfile.render
 !deploy/entrypoint.sh
+!deploy/render-entrypoint.sh
 !deploy/nginx.conf.template
+!deploy/nginx-render.conf.template
 !requirements.txt
 
 # Explicitly keep local and generated assets out of the image.

@@ -34,73 +34,134 @@ from an arbitrary developer's already-populated environment.
 
 ## Controlled security evaluation deployment
 
-No hosting platform or campus identity provider is configured in this
-repository. The following self-contained Docker Compose deployment prepares a
-TLS-only Nginx Basic Auth gateway. It is a deployment template, not an active
-service. It packages the Streamlit source and `.streamlit/config.toml` while
-excluding local datasets, checkpoints, results, virtual environments, and
-deployment secrets.
+The project does not configure a hosting platform or campus identity provider
+automatically. Choose the deployment-specific path below. Both templates keep
+mandatory Nginx Basic Auth in front of every application route and WebSocket.
+Basic Auth does not provide MFA; use unique temporary evaluator accounts and
+any required campus VPN, private network, or identity-aware edge control.
+
+### Render Web Service (Docker)
+
+Render terminates HTTPS at its edge, redirects inbound HTTP to HTTPS, and
+forwards requests to the web service over HTTP. Render requires the web-facing
+container process to listen on `0.0.0.0:$PORT` (default `10000`). In this
+configuration that process is Nginx; Streamlit remains bound exclusively to
+`127.0.0.1:8501` inside the same container and is not published as a separate
+port.
 
 ```text
-Authorized evaluator/scanner
-          |
-          | HTTPS + named Basic Auth account
-          v
-Campus edge / approved network policy (if used)
-          |
-          v
-Nginx TLS + Basic Auth :8443  [only published listener]
-          |
-          | same container/network namespace
-          v
-Streamlit 127.0.0.1:8501     [not published]
+Evaluator -- HTTPS --> Render TLS edge (HTTP redirected to HTTPS)
+                            |
+                            | Render-assigned PORT
+                            v
+                   Nginx Basic Auth (all paths)
+                            |
+                            | authenticated HTTP/WebSocket proxy
+                            v
+                   Streamlit 127.0.0.1:8501
 ```
 
-Nginx applies authentication to the complete application location, including
-health and Streamlit WebSocket upgrade requests. It forwards WebSocket upgrade
-headers only after Basic Auth succeeds, strips the Authorization and common
-identity headers before proxying, and overwrites forwarded host/protocol/IP
-headers rather than trusting client-supplied values. There is no HTTP listener.
-The deployment uses a loopback-only host binding by default. Basic Auth does
-not provide MFA; use named, unique, temporary evaluator accounts, an approved
-VPN/private network, and any required campus identity-aware edge gateway.
+Configure Render Dashboard > **New Web Service** as follows:
 
-### Prepare external configuration and secrets
+1. Select the repository and set **Root Directory** to
+   `optima-bdq-microgrid` (the application directory in this repository).
+2. Select **Docker** and set **Dockerfile Path** to
+   `deploy/Dockerfile.render`. Do not use `deploy/Dockerfile`, which is the
+   separate self-hosted Compose image.
+3. Do not set or override `PORT`; Render provides it (normally `10000`). The
+   entrypoint accepts Render's port and uses `10000` only as a local fallback.
+4. Under **Environment**, set:
 
-1. Use a disposable host and synthetic data only. The image copies
-   `configs/default.yaml` with `csv_path: null`; it does not copy `data/` or
-   `models/`.
-2. Copy `.env.example` to `.env`. Set `PUBLIC_HOST` to the DNS name covered by
-   the TLS certificate. Set `BASIC_AUTH_FILE`, `TLS_CERT_FILE`, and
-   `TLS_KEY_FILE` to protected files outside source control. `.env` and
-   `deploy/secrets/` are ignored by Git. The example contains paths and
-   placeholders only, never passwords or tokens.
-3. Generate one named account per evaluator using Apache `htpasswd` with
-   bcrypt (`htpasswd -B -c <protected-file> <unique-user>`); it prompts for
-   the password without putting it in the command line. Add later users
-   without `-c`. Keep the resulting file in the platform secret manager or a
-   host-only directory readable by container UID 10001, not in the repository.
-   Never log or share the plaintext password.
-4. Provision a valid certificate chain and matching private key from the
-   approved campus PKI or certificate manager. Do not use a self-signed
-   certificate for a remote evaluation. Keep the private key readable only by
-   the deployment service account/container UID 10001.
-5. In `.env`, leave `GATEWAY_BIND_ADDRESS=127.0.0.1` when a trusted edge
-   gateway runs on the same host. If a separate approved gateway must connect,
-   bind only to a private interface and have the infrastructure owner restrict
-   the gateway port to that gateway's source address. Do not bind to `0.0.0.0`
-   as a shortcut. Never publish or forward port 8501.
+   | Key | Value |
+   |---|---|
+   | `BASIC_AUTH_FILE` | `/etc/secrets/optima-htpasswd` |
 
-Docker Compose requires all three secret files and `PUBLIC_HOST`; missing
-values/files or an invalid TLS configuration prevent startup. No credentials
-are accepted through environment variables. The container runs as non-root,
-with a read-only filesystem, dropped Linux capabilities, an internal Docker
-network, and only the gateway port published. Compose file-backed secrets are
-read-only mounts, not a substitute for the cloud/platform secret manager.
+5. Under **Secret Files**, upload a file named exactly
+   `optima-htpasswd`. Render mounts it in a Docker service at
+   `/etc/secrets/optima-htpasswd`. Its contents must be Apache `htpasswd`
+   bcrypt entries; do not enter a plaintext password into the file.
+6. Do not configure a public health-check path that bypasses authentication.
+   The Render entrypoint checks Streamlit's health endpoint locally before
+   starting Nginx; external HTTP health checks remain protected by Basic Auth.
 
-### Start and validate the deployment
+Generate the file locally using Apache `htpasswd` without printing its
+contents, for example:
 
-From the project directory, after provisioning the files:
+```bash
+htpasswd -B -c /secure/path/optima-htpasswd evaluator-name
+```
+
+The command prompts for the password. Add other named accounts with
+`htpasswd -B /secure/path/optima-htpasswd another-evaluator` (without `-c`).
+Upload the resulting file via Render's Secret Files interface. Store the file
+and generated passwords in an approved secret manager; never put them in Git,
+build arguments, logs, or command-line arguments. Render documents that Docker
+Secret Files are available at `/etc/secrets/<filename>` and recommends adding
+the application user to group ID `1000` to read them; the Render Dockerfile
+adds this supplementary group and otherwise runs as non-root UID `10001`.
+
+The Render Nginx template has a single default/catch-all server and one
+authenticated `location /`; it does not create an unauthenticated health,
+static, or WebSocket route. It forwards WebSocket upgrade headers, replaces
+forwarded host/IP/protocol values, and clears client-supplied authorization
+and identity headers. `envsubst` substitutes only `${PORT}` and
+`${BASIC_AUTH_FILE}`, preserving Nginx variables such as `$host`,
+`$remote_addr`, `$http_upgrade`, and `$connection_upgrade`. The service uses
+Render's HTTPS edge and does not require container TLS files. Render handles
+HTTP-to-HTTPS redirection at the public edge; the Nginx response includes
+HSTS and other security headers.
+
+`deploy/render.env.example` records the required Render setting without
+credentials. `deploy/Dockerfile.render` and the Render-specific entrypoint and
+Nginx template are separate from the self-hosted Compose deployment. The
+Docker build context excludes local CSVs, model checkpoints, results,
+virtual environments, caches, and secret files.
+
+### Render verification
+
+After an authorized Render deploy, run from a test client on the authorized
+network and again from an unauthorized network:
+
+```bash
+python -m pytest tests/test_deployment_security.py -q --tb=short
+python -m py_compile scripts/verify_gateway.py
+python scripts/verify_gateway.py
+```
+
+Provide these values to the verifier process through the test client's secret
+manager, not source files or command-line arguments:
+
+- `OPTIMA_GATEWAY_URL`: the HTTPS Render service URL (for example
+  `https://<service>.onrender.com`).
+- `OPTIMA_TEST_USERNAME` and `OPTIMA_TEST_PASSWORD`: temporary evaluator
+  credentials.
+- `OPTIMA_ORIGIN_URL`: a direct-origin probe target using port `8501`, tested
+  from outside the Render service. Confirm the direct port is unreachable;
+  the public Render URL alone proves only that the edge is reachable.
+
+The verifier checks unauthenticated and authenticated `GET /` and
+`/_stcore/health`, invalid credentials, unauthenticated and authenticated
+WebSocket upgrades (401 and 101 respectively), TLS 1.2+, Render's cleartext
+HTTP redirect/refusal, and direct-origin TCP reachability. It never prints
+credentials. A successful run must be performed against the actual deployed
+service from the relevant networks; static tests do not activate or prove
+authentication. Do not change Render settings or deploy solely as part of a
+local code review.
+
+Rotate accounts by replacing the Secret File with newly generated bcrypt
+entries and redeploying through Render. After evaluation, remove temporary
+accounts and scanner/network access, rotate or revoke temporary credentials,
+and retire the test service according to the organization's retention policy.
+
+### Self-hosted Docker Compose (TLS at Nginx)
+
+For deployments that terminate TLS in the container, use `compose.yaml` with
+`deploy/Dockerfile` instead. This separate configuration requires `PUBLIC_HOST`
+and external files for `BASIC_AUTH_FILE`, `TLS_CERT_FILE`, and `TLS_KEY_FILE`.
+Copy `.env.example` to `.env`, provision the files outside source control, and
+keep the default `GATEWAY_BIND_ADDRESS=127.0.0.1` unless an infrastructure
+owner configures a private interface and allowlist. It publishes only the
+gateway port; the existing Compose health check probes Streamlit locally.
 
 ```bash
 docker compose --env-file .env config --quiet
@@ -108,54 +169,16 @@ docker compose --env-file .env up --build -d
 docker compose --env-file .env ps
 ```
 
-The default host binding is `127.0.0.1:8443`. A same-host campus edge proxy
-can forward to that HTTPS listener. For a remote gateway, the deployment
-owner must select a private bind address and enforce the corresponding
-network/firewall allowlist outside this repository. Do not expose the gateway
-or origin to the Internet while setting up or validating access. The only
-container-published port is the TLS gateway; the Streamlit process binds to
-`127.0.0.1:8501` in the same container and is never published.
-Use a currently supported, patched Docker Engine (28.0.0 or newer) and verify
-loopback-published-port behavior on the actual host before relying on it for
-network isolation.
+For this self-hosted deployment, use `scripts/verify_gateway.py` from an
+authorized test client with `OPTIMA_GATEWAY_URL` set to the HTTPS gateway,
+temporary `OPTIMA_TEST_USERNAME` and `OPTIMA_TEST_PASSWORD` supplied through
+the test client's secret manager, and `OPTIMA_ORIGIN_URL` set to a direct
+port-8501 probe from outside the deployment host. This verifies authenticated
+HTTP/WebSocket access, TLS, invalid credentials, and origin reachability.
 
-For live verification, run `python scripts/verify_gateway.py` from an
-authorized test client and separately from an unauthorized network. Provide
-these variables through the test client's secret manager (not a checked-in
-file or command-line argument):
-
-- `OPTIMA_GATEWAY_URL`: the HTTPS gateway origin, with a publicly/privately
-  trusted certificate.
-- `OPTIMA_TEST_USERNAME` and `OPTIMA_TEST_PASSWORD`: a temporary test account.
-- `OPTIMA_ORIGIN_URL`: the host's direct `http://...:8501/` origin target,
-  tested from outside the deployment host/network.
-
-The verifier checks unauthenticated and authenticated `GET /`, the application
-health route, invalid credentials, WebSocket upgrade responses (401 without
-credentials and 101 with valid credentials), TLS 1.2+, cleartext HTTP refusal
-or HTTPS redirection, and direct-origin TCP reachability. It does not print
-credentials. A successful localhost-only test does not prove remote network
-isolation; run the direct-origin and authorized-scanner checks from the actual
-evaluation networks. `pytest tests/test_deployment_security.py` validates
-configuration structure without starting containers or opening ports.
-
-### Campus identity provider, operations, and cleanup
-
-The project does not identify a campus IdP or deploy-time trust boundary, so
-no automatic OIDC/SAML integration is claimed. If campus SSO is required,
-place the campus-approved identity-aware gateway in front of this TLS listener,
-keep the Basic Auth control enabled unless a separately reviewed authentication
-integration replaces it, and verify that the edge also authenticates WebSocket
-upgrades. Do not pass client-supplied identity headers as proof of identity.
-The upstream gateway must be allowed to reach only the private/loopback Nginx
-gateway; the Streamlit origin remains unpublished.
-
-Rotate accounts by replacing the external htpasswd file with newly generated
-hashes, then recreate the deployment through the approved change process.
-After evaluation, remove temporary accounts and scanner allowlists, revoke
-temporary credentials/certificates, stop the test deployment, and remove
-temporary data according to the host retention policy. Restrict access to
-deployment logs and host configuration.
+This self-hosted path requires a currently supported patched Docker Engine.
+It is not the Render configuration and must not be used to pass container TLS
+certificates to Render.
 
 ## Layout
 | Path | Purpose |
